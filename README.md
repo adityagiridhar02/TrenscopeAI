@@ -1,0 +1,2 @@
+# TrenscopeAI
+Early Trend Prediction
