@@ -281,24 +281,160 @@ def predict_viral_days(X, encoder, head):
         pred = head(x_seq)[:, -1, :]
     return max(1, abs(int(pred.item())) % 30)
 
-def get_llm_summary(text_list, max_len=350, min_len=160):
-    # Dedup and limit input size 
-    unique_texts = list(set(text_list))
-    text = " ".join(unique_texts[:30]) 
+def semantic_deduplication(texts, embedder, threshold=0.85):
+    """
+    Remove semantically redundant texts using cosine similarity.
+    Keeps the longer text when duplicates are found.
+    """
+    if not texts: return []
     
-    if len(text) > 3500:
-        text = text[:3500]
+    # Encode all texts
+    embeddings = embedder.encode(texts, convert_to_tensor=True)
+    
+    keep_indices = []
+    rejected_indices = set()
+    
+    for i in range(len(texts)):
+        if i in rejected_indices:
+            continue
+            
+        keep_indices.append(i)
+        
+        # Check similarity with all subsequent texts
+        for j in range(i + 1, len(texts)):
+            if j in rejected_indices:
+                continue
+                
+            sim = torch.nn.functional.cosine_similarity(embeddings[i], embeddings[j], dim=0)
+            
+            if sim > threshold:
+                # Mark as duplicate
+                rejected_indices.add(j)
+                
+    return [texts[i] for i in keep_indices]
+
+
+def cluster_and_select(texts, embedder, num_clusters=3):
+    """
+    Cluster texts to find diverse viewpoints.
+    Returns a structured list of representative texts.
+    """
+    if not texts: return []
+    if len(texts) <= num_clusters: return texts
+    
+    from sklearn.cluster import KMeans
+    
+    embeddings = embedder.encode(texts)
+    
+    # Adjust clusters if few texts
+    actual_clusters = min(num_clusters, len(texts))
+    kmeans = KMeans(n_clusters=actual_clusters, random_state=42, n_init=10)
+    labels = kmeans.fit_predict(embeddings)
+    
+    selected_texts = []
+    
+    for i in range(actual_clusters):
+        # Get indices for this cluster
+        cluster_indices = [idx for idx, label in enumerate(labels) if label == i]
+        
+        if not cluster_indices: continue
+            
+        # Find the text closest to the cluster center
+        cluster_center = kmeans.cluster_centers_[i]
+        
+        best_idx = -1
+        best_sim = -1
+        
+        for idx in cluster_indices:
+            sim = np.dot(embeddings[idx], cluster_center)
+            if sim > best_sim:
+                best_sim = sim
+                best_idx = idx
+                
+        if best_idx != -1:
+            selected_texts.append(texts[best_idx])
+            
+    return selected_texts
+
+
+def get_llm_summary(text_list, embedder=None, max_len=350, min_len=160):
+    """
+    Robust summarization using semantic clustering and structured prompting.
+    """
+    if not text_list: return "No data to summarize."
+    
+    # 1. Semantic Deduplication (if embedder provided)
+    if embedder:
+        cleaned_texts = semantic_deduplication(text_list, embedder)
+    else:
+        cleaned_texts = list(set(text_list))
+        
+    # 2. Diversity Selection (Cluster & Select)
+    if embedder and len(cleaned_texts) > 5:
+        # Get 3-4 distinct themes
+        diverse_texts = cluster_and_select(cleaned_texts, embedder, num_clusters=4)
+        
+        # Always include the top 1 viral post (first in list usually has highest engagement)
+        if text_list[0] not in diverse_texts:
+            diverse_texts.insert(0, text_list[0])
+            
+        final_selection = diverse_texts[:5] # Cap at 5 key points
+    else:
+        final_selection = cleaned_texts[:5]
+
+    # 3. Natural Language Prompt Construction
+    # Join texts naturally without explicit numbering
+    prompt = "Provide a coherent summary of the following discussion:\n\n"
+    prompt += " ".join(final_selection)
+        
+    if len(prompt) > 3500:
+        prompt = prompt[:3500]
         
     try:
         summarizer = pipeline("summarization", model="Falconsai/text_summarization", framework="pt")
+        
         # Ensure input is sufficient
-        if len(text) < min_len:
-            return text 
-        return summarizer("summarize: " + text, max_length=max_len, min_length=min_len, do_sample=False)[0]['summary_text']
+        if len(prompt) < 50: # Lower threshold since we filtered
+            return final_selection[0]
+            
+        summary = summarizer(prompt, max_length=max_len, min_length=min_len, do_sample=False)[0]['summary_text']
+        
+        # Aggressive cleanup: Remove common hallucination artifacts
+        cleanup_patterns = [
+            "Point 1:", "Point 2:", "Point 3:", "Point 4:", "Point 5:", "Point 6:",
+            "- Point", "Summarize", "summarize", "discussion points", 
+            "coherent paragraph", "following discussion"
+        ]
+        
+        for pattern in cleanup_patterns:
+            summary = summary.replace(pattern, "")
+        
+        # Remove trailing fragments like ". . in the . We ."
+        import re
+        summary = re.sub(r'\s+\.\s+', '. ', summary)  # Fix ". . " to ". "
+        summary = re.sub(r'\s+\.', '.', summary)  # Fix " ." to "."
+        summary = re.sub(r'\.{2,}', '.', summary)  # Fix "..." to "."
+        summary = re.sub(r'\s+', ' ', summary)  # Fix multiple spaces
+        
+        # Remove incomplete sentences at the end (common hallucination)
+        sentences = summary.split('.')
+        complete_sentences = []
+        for sent in sentences:
+            sent = sent.strip()
+            # Keep sentence if it has at least 3 words and doesn't look like a fragment
+            if len(sent.split()) >= 3 and not sent.endswith((',', 'and', 'or', 'the', 'a', 'in')):
+                complete_sentences.append(sent)
+        
+        summary = '. '.join(complete_sentences)
+        if summary and not summary.endswith('.'):
+            summary += '.'
+            
+        return summary.strip()
+        
     except Exception as e:
         print(f"Summarization error: {e}")
-        # Fallback: Just return the first few sentences cleanly
-        return ". ".join(text.split(".")[:3]) + "."
+        # Fallback: Return the top insight cleanly
+        return final_selection[0]
 
 # --- MAIN ANALYSIS FUNCTION ---
 def get_trend_data(keyword, use_enhanced_synthesis=False):
@@ -310,7 +446,7 @@ def get_trend_data(keyword, use_enhanced_synthesis=False):
         keyword: Search keyword/trend to analyze
         use_enhanced_synthesis: If True, also generate enhanced v2 synthesis
     """
-    embedder = SentenceTransformer("all-MiniLM-L6-v2")
+    embedder = SentenceTransformer("all-mpnet-base-v2")
     
     # 1. Reddit Analysis
     df_reddit = fetch_reddit_posts(keyword)
@@ -323,7 +459,7 @@ def get_trend_data(keyword, use_enhanced_synthesis=False):
         X_r, meta_r = aggregate_daily(df_reddit, embedder)
         reddit_data["viral_days"] = len(meta_r) if meta_r else 0
         texts = df_reddit.sort_values("upvotes", ascending=False).head(20)["text"].tolist()
-        reddit_data["summary"] = get_llm_summary(texts)
+        reddit_data["summary"] = get_llm_summary(texts, embedder=embedder)
 
     # 2. Twitter Analysis
     df_twitter = fetch_twitter_posts(keyword)
@@ -336,10 +472,11 @@ def get_trend_data(keyword, use_enhanced_synthesis=False):
         X_t, meta_t = aggregate_daily(df_twitter, embedder)
         twitter_data["viral_days"] = len(meta_t) if meta_t else 0
         texts = df_twitter.sort_values("upvotes", ascending=False).head(20)["text"].tolist()
-        twitter_data["summary"] = get_llm_summary(texts)
+        twitter_data["summary"] = get_llm_summary(texts, embedder=embedder)
         
     # 3. Cross-Platform Synthesis (ORIGINAL - PRESERVED)
     combined_text = f"REDDIT: {reddit_data['summary']} TWITTER: {twitter_data['summary']}"
+    # No embedder needed for this single concatenated string
     overall_summary = get_llm_summary([combined_text], max_len=120, min_len=40)
     
     # 4. Enhanced Synthesis v2 (OPTIONAL - NEW)

@@ -122,7 +122,21 @@ with st.sidebar:
     trending_topics = load_trending()
     
     if trending_topics:
+        # Category color mapping
+        category_colors = {
+            'Technology': '#4CAF50',
+            'Sports': '#FF9800',
+            'Entertainment': '#E91E63',
+            'Politics': '#2196F3',
+            'News': '#9C27B0',
+            'General': '#757575'
+        }
+        
         for topic in trending_topics:
+            # Get category and color
+            category = topic.get('category', 'General')
+            color = category_colors.get(category, '#757575')
+            
             # Create clickable button for each trending topic
             if st.button(
                 f"#{topic['rank']} {topic['keyword']}",
@@ -135,9 +149,12 @@ with st.sidebar:
                 st.session_state.auto_analyze = True
                 st.rerun()
             
-            # Show engagement score below button
+            # Show category badge and engagement score below button
             st.markdown(
-                f"<small style='color: #888;'>💬 {topic['engagement_score']:,} engagement</small>",
+                f"""<div style='display: flex; justify-content: space-between; align-items: center;'>
+                    <span style='background-color: {color}; color: white; padding: 2px 8px; border-radius: 10px; font-size: 0.7rem; font-weight: bold;'>{category}</span>
+                    <small style='color: #888;'>💬 {topic['engagement_score']:,}</small>
+                </div>""",
                 unsafe_allow_html=True
             )
             st.markdown("---")
@@ -233,7 +250,7 @@ if keyword and search_clicked:
             # Summary Card
             st.markdown(f"""
             <div class="metric-card">
-                <h4>AI Summary</h4>
+                <h4>Reddit Summary</h4>
                 <p>{r_data['summary']}</p>
             </div>
             """, unsafe_allow_html=True)
@@ -269,7 +286,7 @@ if keyword and search_clicked:
             # Summary Card
             st.markdown(f"""
             <div class="metric-card">
-                <h4>AI Summary</h4>
+                <h4>Twitter/X Summary</h4>
                 <p>{t_data['summary']}</p>
             </div>
             """, unsafe_allow_html=True)
