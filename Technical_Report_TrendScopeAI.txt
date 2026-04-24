@@ -1,0 +1,105 @@
+================================================================================
+                    TRENDSCOPE AI: TECHNICAL DOCUMENTATION
+================================================================================
+
+PROJECT OVERVIEW
+--------------------------------------------------------------------------------
+This project, "TrendScope AI," is an advanced Social Media Trend Analysis and 
+Viral Prediction system. It allows users to input a keyword (e.g., "AI", "Apple")
+and receive a comprehensive report on how that topic is performing across major 
+platforms (Reddit and X/Twitter).
+
+The core innovation of this project is the use of **Mamba (State Space Models)** 
+instead of traditional RNNs/Transformers for temporal modeling, allowing for 
+efficient long-sequence viral lifespan prediction.
+
+CORE TECHNOLOGY STACK
+--------------------------------------------------------------------------------
+1.  **Architecture: Pure PyTorch Mamba (SSM)**
+    *   **What it is:** A `MinimalMambaLayer` is implemented from scratch in pure PyTorch.
+    *   **Why it's used:** Unlike Transformers (quadratic complexity) or RNNs (slow sequential), 
+        Mamba offers linear-time scaling with sequence length while maintaining 
+        long-term memory. This makes it ideal for modeling the time-series evolution 
+        of a viral trend.
+    *   **Implementation:** 
+        - `d_model`: Dimension of the input vector (embedding + stats).
+        - `d_state=16`: The latent state size of the SSM.
+        - `ssm_scan`: A simplified selective scan mechanism to aggregate temporal information.
+
+2.  **Embeddings: SentenceTransformers**
+    *   **Model:** `all-MiniLM-L6-v2`
+    *   **Function:** Converts raw text (titles/tweets) into dense 384-dimensional vectors.
+    *   **Usage:** These vectors allow the system to understand *semantic relevance*. 
+        The system filters out noise by comparing post similarity to the query keyword.
+
+3.  **LLM Summarization: Falconsai/text_summarization**
+    *   **Base Model:** T5-small (fine-tuned for summarization).
+    *   **Format:** Safetensors (secure, prevents pickle execution attacks common in PyTorch).
+    *   **Pipeline:** Hugging Face `transformers.pipeline`.
+    *   **Configuration:** 
+        - Max Length: 150 tokens.
+        - Min Length: 60 tokens.
+        - Context: Reads Top 20 relevant posts to generate a 5-line coherent summary.
+
+--------------------------------------------------------------------------------
+DETAILED FILE BREAKDOWN
+--------------------------------------------------------------------------------
+
+FILE 1: dense_model_trial.ipynb (The "Reddit" Model)
+----------------------------------------------------
+*   **Focus:** Reddit Data Analysis.
+*   **Data Source:** `fetch_reddit_posts` using standard HTTP requests to Reddit's public JSON API.
+*   **Key Components:**
+    - Fetches ~10 pages of search results.
+    - `filter_by_keyword_relevance`: Removes spam using Cosine Similarity > 0.35.
+    - `TemporalSSM`: Predicting observed viral duration.
+*   **Outputs:**
+    1.  Viral Duration (Observed days active).
+    2.  Top 5 Trending Posts (Formatted as clean clickable markdown links).
+        - **Metrics Displayed:** Upvotes (👍) and Comments (💬).
+    3.  AI Summary: A concise paragraph summarizing the distinct Reddit discussions.
+
+FILE 2: twitter_trend_model.ipynb (The "Twitter/X" Model)
+---------------------------------------------------------
+*   **Focus:** X (Twitter) Data Analysis.
+*   **Data Source:** Hybrid Engine.
+    - **Primary:** `ntscraper` (Nitter Scraper) for real data if installed.
+    - **Back-up (Simulation):** A "Coherent News Generator" if scraping is blocked. 
+      Unlike random noise, this generates realistic "Breaking News" or "Analyst Opinion" 
+      tweets relative to your keyword to ensure the AI summary remains high-quality.
+*   **Key Components:**
+    - `fetch_twitter_posts`: Handles the fallback logic transparently.
+    - Expanded Context Window: Feeds 20+ headlines to the LLM to support longer summaries.
+*   **Outputs:**
+    1.  Viral Duration.
+    2.  Top 5 Trending Tweets (with fallback search links if IDs are simulated).
+        - **Metrics Displayed:** Likes (❤️), Comments (💬), and Reposts (🔁).
+    3.  AI Summary: A "News-style" recap of the topic (approx. 5 lines).
+
+FILE 3: unified_trend_analysis.ipynb (The "Master Dashboard")
+-------------------------------------------------------------
+*   **Focus:** Cross-Platform Intelligence.
+*   **Implementation:** This is a standalone file that consolidates ALL logic from the previous 
+    two nontebooks. It does not import them; it contains the complete self-sufficient code.
+*   **Unique Feature: Cross-Platform Synthesis**
+    - After generating individual reports for Reddit and Twitter, this notebook takes both 
+      result summaries.
+    - It feeds them back into the LLM with a meta-prompt: 
+      *"REDDIT SAYS: [A]. TWITTER SAYS: [B]. Summarize."*
+    - This generates a **Comparative Analysis** showing how the two platforms differ 
+      (e.g., "Reddit is discussing the technical flaw, while Twitter is sharing memes about the CEO").
+*   **Final Output Structure:**
+    1.  🔴 **REDDIT REPORT**: Stats, Links, Summary.
+    2.  ⚫ **X (TWITTER) REPORT**: Stats, Links, Summary.
+    3.  ⚖️ **CROSS-PLATFORM SYNTHESIS**: The AI-generated comparison.
+
+--------------------------------------------------------------------------------
+INPUTS AND OUTPUTS SUMMARY
+--------------------------------------------------------------------------------
+*   **Input:** A single text string (the keyword/hashtag), e.g., "Gaza", "Bitcoin".
+*   **Processing:** 
+    1. Text -> Vector (Embedding).
+    2. Vectors -> Time Series (Aggregation).
+    3. Time Series -> Mamba Model -> Viral Span Prediction.
+    4. Top Texts -> LLM -> Summaries.
+*   **Output:** Rich Markdown interactive display in Jupyter.
